@@ -123,7 +123,7 @@ class HfRepoInterface:
         """Downloads `files`; see `HfApi.hf_hub_download` for more kwargs."""
         # NOTE: `HfApi.snapshot_download` (e.g., with a filter) seems to struggle with large repos,
         # so here we implement our own multi-file downloader. We should check periodically to see
-        # if the upstream `huggingface_hub` utilies have improved for this use case.
+        # if the upstream `huggingface_hub` utilities have improved for this use case.
         if kwargs.get("subfolder", None) is not None:
             raise ValueError(
                 "`subfolder` must be `None`, i.e., `files` must be relative to the repo root."

@@ -7,6 +7,7 @@ import logging
 
 import av
 import numpy as np
+import numpy.typing as npt
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,9 @@ class VideoReader(abc.ABC):
         if timestamps is not None and np.diff(timestamps).min() <= 0:
             raise ValueError("Timestamps must be strictly increasing")
 
-    def decode_images_from_timestamps(self, requested_timestamps: np.ndarray) -> np.ndarray:
+    def decode_images_from_timestamps(
+        self, requested_timestamps: np.ndarray
+    ) -> tuple[npt.NDArray[np.uint8], npt.NDArray[np.int64]]:
         """Decode images closest before the requested timestamps.
 
         Args:

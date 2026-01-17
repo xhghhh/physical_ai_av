@@ -64,84 +64,6 @@ class FrameTransform:
             raise ValueError(f"{self.source_frame_info=} does not match {frame_info=}.")
 
 
-class TransformTree:
-    """A transform tree for keeping track of multiple coordinate frames.
-
-    Inspired by the ROS `tf`/`tf2` libraries.
-
-    Attributes:
-        parent (`dict[str, tuple[str, spt.RigidTransform | interpolation.RigidTransformInterpolator]]`):
-            Maps frames added to the transform tree to their parent frame and the transform (which
-            may be time-varying) that converts coordinates from the child frame to the parent frame,
-            i.e., `coordinates_parent = tf_parent_child @ coordinates_child`.
-        root_frame_id (`str`): The ID of the root frame of the transform tree; assumed to be static.
-    """
-
-    def __init__(self, root_frame_id: str = "anchor") -> None:
-        self.parent = {}
-        self.root_frame_id = root_frame_id
-
-    def lookup_transform(
-        self,
-        target_frame_info: FrameInfo,
-        source_frame_info: FrameInfo,
-    ) -> FrameTransform:
-        """Computes the transform between a source and target frame.
-
-        Args:
-            target_frame_info (`FrameInfo`): The target frame for coordinate conversion.
-            source_frame_info (`FrameInfo`): The source frame for coordinate conversion.
-
-        Returns:
-            `FrameTransform`: The transform (with associated frame information) that specifies
-                coordinate transformation from the source frame to the target frame.
-        """
-        # TODO(eschmerling): optimize case where you don't need to go back to root.
-        tf_root_target = self._compute_tf_root_frame(target_frame_info)
-        tf_root_source = self._compute_tf_root_frame(source_frame_info)
-        return FrameTransform(
-            target_frame_info,
-            source_frame_info,
-            tf_root_target.inv() @ tf_root_source,
-        )
-
-    def add_transform(
-        self,
-        parent_frame_id: str,
-        child_frame_id: str,
-        tf_parent_child: spt.RigidTransform | interpolation.RigidTransformInterpolator,
-    ) -> None:
-        """Adds a transform between a frame and a child frame to the transform tree.
-
-        Args:
-            parent_frame_id (`str`): The ID of the parent frame, which may already be in the
-                transform tree.
-            child_frame_id (`str`): The ID of the child frame, which must not already be in the
-                transform tree.
-            tf_parent_child (`spt.RigidTransform | interpolation.RigidTransformInterpolator`): The
-                transform (which may be time-varying) that converts coordinates from the child frame
-                to the parent frame, i.e.,
-                `coordinates_parent = tf_parent_child @ coordinates_child`.
-        """
-        if child_frame_id in self.parent:
-            raise ValueError(f"{child_frame_id=} is already in the transform tree.")
-        self.parent[child_frame_id] = (parent_frame_id, tf_parent_child)
-
-    def _compute_tf_root_frame(self, frame_info: FrameInfo):
-        """Computes the transform to the root frame from the given frame."""
-        frame_id = frame_info.frame_id
-        tf_root_frame = spt.RigidTransform.identity()
-        while frame_id != self.root_frame_id:
-            frame_id, tf_parent_frame = self.parent[frame_id]
-            if not isinstance(tf_parent_frame, spt.RigidTransform):
-                if isinstance(tf_parent_frame, interpolation.RigidTransformInterpolator):
-                    tf_parent_frame = tf_parent_frame(frame_info.timestamp)
-                else:
-                    raise ValueError(f"Unknown transform type {type(tf_parent_frame)=}.")
-            tf_root_frame = tf_parent_frame @ tf_root_frame
-        return tf_root_frame
-
-
 class TransformableType(enum.StrEnum):
     """Supported transformable types."""
 
@@ -208,3 +130,93 @@ class Transformable:
             self.transform(frame_transform.tf_target_source),
             frame_info=frame_transform.target_frame_info,
         )
+
+
+class TransformTree:
+    """A transform tree for keeping track of multiple coordinate frames.
+
+    Inspired by the ROS `tf`/`tf2` libraries.
+
+    Attributes:
+        parent (`dict[str, tuple[str, spt.RigidTransform | interpolation.RigidTransformInterpolator]]`):
+            Maps frames added to the transform tree to their parent frame and the transform (which
+            may be time-varying) that converts coordinates from the child frame to the parent frame,
+            i.e., `coordinates_parent = tf_parent_child @ coordinates_child`.
+        root_frame_id (`str`): The ID of the root frame of the transform tree; assumed to be static.
+    """
+
+    def __init__(self, root_frame_id: str = "anchor") -> None:
+        self.parent = {}
+        self.root_frame_id = root_frame_id
+
+    def lookup_transform(
+        self,
+        target_frame_info: FrameInfo,
+        source_frame_info: FrameInfo,
+    ) -> FrameTransform:
+        """Computes the transform between a source and target frame.
+
+        Args:
+            target_frame_info (`FrameInfo`): The target frame for coordinate conversion.
+            source_frame_info (`FrameInfo`): The source frame for coordinate conversion.
+
+        Returns:
+            `FrameTransform`: The transform (with associated frame information) that specifies
+                coordinate transformation from the source frame to the target frame.
+        """
+        # TODO(eschmerling): optimize case where you don't need to go back to root.
+        tf_root_target = self._compute_tf_root_frame(target_frame_info)
+        tf_root_source = self._compute_tf_root_frame(source_frame_info)
+        return FrameTransform(
+            target_frame_info,
+            source_frame_info,
+            tf_root_target.inv() * tf_root_source,
+        )
+
+    def add_transform(
+        self,
+        parent_frame_id: str,
+        child_frame_id: str,
+        tf_parent_child: spt.RigidTransform
+        | interpolation.RigidTransformInterpolator
+        | interpolation.Interpolator[Transformable],
+    ) -> None:
+        """Adds a transform between a frame and a child frame to the transform tree.
+
+        Args:
+            parent_frame_id (`str`): The ID of the parent frame, which may already be in the
+                transform tree.
+            child_frame_id (`str`): The ID of the child frame, which must not already be in the
+                transform tree.
+            tf_parent_child (`spt.RigidTransform | interpolation.RigidTransformInterpolator` |
+                interpolation.Interpolator[Transformable]): The transform (which may be time-varying)
+                that converts coordinates from the child frame to the parent frame, i.e.,
+                `coordinates_parent = tf_parent_child @ coordinates_child`.
+                In the case of an `Interpolator[Transformable]`, a RigidTransformInterpolator is created
+                from the `pose` field of the `Transformable` instance.
+        """
+        if isinstance(tf_parent_child, interpolation.Interpolator):
+            assert isinstance(tf_parent_child.values, Transformable)
+            assert hasattr(tf_parent_child.values, "pose")
+            assert isinstance(tf_parent_child.values.pose, spt.RigidTransform)
+            tf_parent_child = interpolation.RigidTransformInterpolator(
+                tf_parent_child.timestamps,
+                tf_parent_child.values.pose,
+            )
+        if child_frame_id in self.parent:
+            raise ValueError(f"{child_frame_id=} is already in the transform tree.")
+        self.parent[child_frame_id] = (parent_frame_id, tf_parent_child)
+
+    def _compute_tf_root_frame(self, frame_info: FrameInfo):
+        """Computes the transform to the root frame from the given frame."""
+        frame_id = frame_info.frame_id
+        tf_root_frame = spt.RigidTransform.identity()
+        while frame_id != self.root_frame_id:
+            frame_id, tf_parent_frame = self.parent[frame_id]
+            if not isinstance(tf_parent_frame, spt.RigidTransform):
+                if isinstance(tf_parent_frame, interpolation.RigidTransformInterpolator):
+                    tf_parent_frame = tf_parent_frame(frame_info.timestamp)
+                else:
+                    raise ValueError(f"Unknown transform type {type(tf_parent_frame)=}.")
+            tf_root_frame = tf_parent_frame * tf_root_frame
+        return tf_root_frame

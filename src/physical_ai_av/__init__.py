@@ -9,3 +9,4 @@ from .dataset import PhysicalAIAVDatasetInterface
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __version__ = importlib.metadata.version("physical_ai_av")
+__all__ = ["HfRepoInterface", "PhysicalAIAVDatasetInterface"]

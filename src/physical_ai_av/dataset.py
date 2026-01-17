@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: MIT
-import dataclasses
-import json
 import io
+import json
 import logging
 import pathlib
 import types
@@ -10,9 +9,9 @@ import zipfile
 from typing import Any, Iterable
 
 import pandas as pd
-from physical_ai_av import egomotion, video
-from physical_ai_av.utils import hf_interface
 
+from physical_ai_av import calibration, egomotion, video
+from physical_ai_av.utils import hf_interface
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +131,18 @@ class PhysicalAIAVDatasetInterface(hf_interface.HfRepoInterface):
         )
         with self.open_file(chunk_filename, maybe_stream=maybe_stream) as f:
             if chunk_filename.endswith(".parquet"):
-                return pd.read_parquet(f).loc[clip_id]
+                feature_df = pd.read_parquet(f).loc[clip_id]
+                if feature == "sensor_extrinsics":
+                    return calibration.SensorExtrinsics.from_extrinsics_df(feature_df)
+                elif feature == "camera_intrinsics":
+                    return calibration.CameraIntrinsics.from_intrinsics_df(feature_df)
+                elif feature == "vehicle_dimensions":
+                    return calibration.VehicleDimensions.from_dimensions_df(feature_df)
+                else:
+                    logger.warning(
+                        f"Feature-specific data reader for {feature=} not implemented yet."
+                    )
+                    return feature_df
             elif chunk_filename.endswith(".zip"):
                 clip_files_in_zip = self.features.get_clip_files_in_zip(clip_id, feature)
                 with zipfile.ZipFile(f, "r") as zf:
@@ -191,7 +201,7 @@ class Features:
         """Returns the chunk feature filename within the dataset repo."""
         return self.features_df.at[feature, "chunk_path"].format(chunk_id=chunk_id)
 
-    def get_clip_files_in_zip(self, clip_id: str, feature: str) -> list[str]:
+    def get_clip_files_in_zip(self, clip_id: str, feature: str) -> dict[str, str]:
         """Returns the files within a chunk feature zip corresponding to `clip_id`."""
         templates = self.features_df.at[feature, "clip_files_in_zip"]
         if not isinstance(templates, dict):

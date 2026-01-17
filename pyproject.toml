@@ -26,10 +26,12 @@ demo = [
     "ipykernel>=7.1.0",
     "ipywidgets>=8.1.7",
     "matplotlib>=3.10.7",
+    "mediapy>=1.2.0",
     "opencv-python-headless>=4.12.0.88",
 ]
 dev = [
     "pytest>=9.0.1",
+    "pre-commit>=4.4.0"
 ]
 
 [tool.ruff]
