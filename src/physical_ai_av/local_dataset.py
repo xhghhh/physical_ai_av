@@ -50,9 +50,20 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from physical_ai_av import calibration, egomotion, video
+from physical_ai_av import egomotion, video
 
 logger = logging.getLogger(__name__)
+
+# Camera name to index mapping
+CAMERA_NAME_TO_INDEX = {
+    "camera_cross_left_120fov": 0,
+    "camera_front_wide_120fov": 1,
+    "camera_cross_right_120fov": 2,
+    "camera_rear_left_70fov": 3,
+    "camera_rear_tele_30fov": 4,
+    "camera_rear_right_70fov": 5,
+    "camera_front_tele_30fov": 6,
+}
 
 
 class LocalPhysicalAIAVDataset(Dataset):
@@ -76,11 +87,16 @@ class LocalPhysicalAIAVDataset(Dataset):
 
     Returns:
         A dictionary containing:
-            - "image_frames": np.ndarray of shape (num_cameras, num_frames, H, W, C)
-            - "ego_history_xyz": np.ndarray of shape (num_frames, 3) - vehicle positions
-            - "ego_history_rot": np.ndarray of shape (num_frames, 4) - quaternions (qx, qy, qz, qw)
+            - "image_frames": torch.Tensor of shape (N_cameras, num_frames, 3, H, W)
+            - "camera_indices": torch.Tensor of shape (N_cameras,)
+            - "ego_history_xyz": torch.Tensor of shape (1, 1, num_history_steps, 3)
+            - "ego_history_rot": torch.Tensor of shape (1, 1, num_history_steps, 3, 3)
+            - "ego_future_xyz": torch.Tensor of shape (1, 1, num_future_steps, 3)
+            - "ego_future_rot": torch.Tensor of shape (1, 1, num_future_steps, 3, 3)
+            - "relative_timestamps": torch.Tensor of shape (N_cameras, num_frames)
+            - "absolute_timestamps": torch.Tensor of shape (N_cameras, num_frames)
+            - "t0_us": int - the t0 timestamp used
             - "clip_id": str - the clip ID
-            - "timestamps": np.ndarray of shape (num_frames,) - timestamps in microseconds
             - "split": str - the dataset split ("train", "val", or "test")
 
     Examples:
@@ -292,22 +308,53 @@ class LocalPhysicalAIAVDataset(Dataset):
         # Stack images: (num_cameras, num_frames, H, W, C)
         image_frames = np.stack(all_images, axis=0)
 
+        # Convert to torch.Tensor and permute to (N_cameras, num_frames, 3, H, W)
+        # Input is (N_cameras, num_frames, H, W, C) where C=3 (RGB)
+        image_frames = torch.from_numpy(image_frames).permute(0, 1, 4, 2, 3)
+
+        # Create camera indices using the predefined mapping
+        camera_indices = torch.tensor(
+            [CAMERA_NAME_TO_INDEX.get(cam, -1) for cam in self.cameras],
+            dtype=torch.long
+        )
+
         # Load egomotion data
         ego_state = self._load_egomotion_data(clip_id, timestamps)
 
-        # Extract position (xyz) and rotation (quaternion)
+        # Extract position (xyz) and rotation
         ego_history_xyz = ego_state.pose.translation  # Shape: (num_frames, 3)
-        ego_history_rot = ego_state.pose.rotation.as_quat()  # Shape: (num_frames, 4), (qx, qy, qz, qw)
+        ego_rot = ego_state.pose.rotation  # scipy Rotation object
+
+        # Convert rotation to rotation matrix (num_frames, 3, 3)
+        ego_history_rot = ego_rot.as_matrix()  # Shape: (num_frames, 3, 3)
+
+        # For now, history and future are the same (no split)
+        # Reshape to (1, 1, num_frames, 3) for xyz
+        ego_history_xyz_t = torch.from_numpy(ego_history_xyz).float().unsqueeze(0).unsqueeze(0)
+        ego_future_xyz_t = ego_history_xyz_t.clone()
+
+        # Reshape to (1, 1, num_frames, 3, 3) for rotation matrices
+        ego_history_rot_t = torch.from_numpy(ego_history_rot).float().unsqueeze(0).unsqueeze(0)
+        ego_future_rot_t = ego_history_rot_t.clone()
+
+        # Create timestamps tensors
+        absolute_timestamps = torch.from_numpy(timestamps).float().unsqueeze(0).expand(len(self.cameras), -1)
+        relative_timestamps = absolute_timestamps - self.t0_us
 
         # Get split info if available
         split_info = self.clip_index.at[clip_id, "split"] if "split" in self.clip_index.columns else None
 
         return {
             "image_frames": image_frames,
-            "ego_history_xyz": ego_history_xyz,
-            "ego_history_rot": ego_history_rot,
+            "camera_indices": camera_indices,
+            "ego_history_xyz": ego_history_xyz_t,
+            "ego_history_rot": ego_history_rot_t,
+            "ego_future_xyz": ego_future_xyz_t,
+            "ego_future_rot": ego_future_rot_t,
+            "relative_timestamps": relative_timestamps,
+            "absolute_timestamps": absolute_timestamps,
+            "t0_us": self.t0_us,
             "clip_id": clip_id,
-            "timestamps": timestamps,
             "split": split_info,
         }
 
@@ -361,11 +408,16 @@ def load_physical_aiavdataset(
 
     Returns:
         Dictionary containing:
-            - "image_frames": np.ndarray of shape (num_cameras, num_frames, H, W, C)
-            - "ego_history_xyz": np.ndarray of shape (num_frames, 3)
-            - "ego_history_rot": np.ndarray of shape (num_frames, 4)
+            - "image_frames": torch.Tensor of shape (N_cameras, num_frames, 3, H, W)
+            - "camera_indices": torch.Tensor of shape (N_cameras,)
+            - "ego_history_xyz": torch.Tensor of shape (1, 1, num_history_steps, 3)
+            - "ego_history_rot": torch.Tensor of shape (1, 1, num_history_steps, 3, 3)
+            - "ego_future_xyz": torch.Tensor of shape (1, 1, num_future_steps, 3)
+            - "ego_future_rot": torch.Tensor of shape (1, 1, num_future_steps, 3, 3)
+            - "relative_timestamps": torch.Tensor of shape (N_cameras, num_frames)
+            - "absolute_timestamps": torch.Tensor of shape (N_cameras, num_frames)
+            - "t0_us": int - the t0 timestamp used
             - "clip_id": str
-            - "timestamps": np.ndarray of shape (num_frames,)
             - "split": str or None - the dataset split
 
     Example:
@@ -388,3 +440,69 @@ def load_physical_aiavdataset(
         num_frames=num_frames,
     )
     return dataset[0]
+
+
+def get_dataloader(
+    dataset_root: str | pathlib.Path,
+    clip_ids: list[str] | None = None,
+    split: str | None = None,
+    cameras: list[str] | None = None,
+    t0_us: int = 0,
+    dt_us: int = 50_000,
+    num_frames: int = 10,
+    batch_size: int = 1,
+    shuffle: bool = False,
+    num_workers: int = 0,
+    **kwargs,
+) -> torch.utils.data.DataLoader:
+    """Create a DataLoader for the PhysicalAI-AV dataset.
+
+    This is a convenience function to create a DataLoader with the specified
+    dataset configuration.
+
+    Args:
+        dataset_root: Path to the dataset root directory.
+        clip_ids: Optional list of clip IDs to load.
+        split: Optional dataset split to filter by ("train", "val", or "test").
+        cameras: List of camera names to load.
+        t0_us: Initial timestamp offset in microseconds.
+        dt_us: Time step between frames in microseconds.
+        num_frames: Number of frames to load per sample.
+        batch_size: Number of samples per batch.
+        shuffle: Whether to shuffle the data.
+        num_workers: Number of worker processes (must be 0 due to video reader limitations).
+        **kwargs: Additional arguments passed to DataLoader.
+
+    Returns:
+        A DataLoader instance.
+
+    Example:
+        >>> dataloader = get_dataloader(
+        ...     "/path/to/dataset",
+        ...     split="train",
+        ...     batch_size=4,
+        ...     cameras=["camera_front_wide_120fov"],
+        ... )
+        >>> for batch in dataloader:
+        ...     print(batch["image_frames"].shape)
+        ...     break
+    """
+    from torch.utils.data import DataLoader
+
+    dataset = LocalPhysicalAIAVDataset(
+        dataset_root=dataset_root,
+        clip_ids=clip_ids,
+        split=split,
+        cameras=cameras,
+        t0_us=t0_us,
+        dt_us=dt_us,
+        num_frames=num_frames,
+    )
+
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        **kwargs,
+    )
