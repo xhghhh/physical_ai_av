@@ -5,8 +5,14 @@ import logging
 
 from .utils.hf_interface import HfRepoInterface
 from .dataset import PhysicalAIAVDatasetInterface
+from .local_dataset import LocalPhysicalAIAVDataset, load_physical_aiavdataset
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 __version__ = importlib.metadata.version("physical_ai_av")
-__all__ = ["HfRepoInterface", "PhysicalAIAVDatasetInterface"]
+__all__ = [
+    "HfRepoInterface",
+    "PhysicalAIAVDatasetInterface",
+    "LocalPhysicalAIAVDataset",
+    "load_physical_aiavdataset",
+]
