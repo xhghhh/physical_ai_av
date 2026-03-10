@@ -56,13 +56,13 @@ logger = logging.getLogger(__name__)
 
 # Camera name to index mapping
 CAMERA_NAME_TO_INDEX = {
-    "camera_cross_left_120fov": 0,
-    "camera_front_wide_120fov": 1,
-    "camera_cross_right_120fov": 2,
+    "camera_cross_left_120fov": 0,  # often-used
+    "camera_front_wide_120fov": 1,  # often-used
+    "camera_cross_right_120fov": 2,  # often-used
     "camera_rear_left_70fov": 3,
     "camera_rear_tele_30fov": 4,
     "camera_rear_right_70fov": 5,
-    "camera_front_tele_30fov": 6,
+    "camera_front_tele_30fov": 6,  # often-used
 }
 
 
@@ -83,7 +83,9 @@ class LocalPhysicalAIAVDataset(Dataset):
         cameras: List of camera names to load. Defaults to ["camera_front_wide_120fov"].
         t0_us: Initial timestamp offset in microseconds. Defaults to 0.
         dt_us: Time step between frames in microseconds. Defaults to 50_000 (20Hz).
-        num_frames: Number of frames to load per sample. Defaults to 10.
+        num_frames: Number of image frames to load per sample. Defaults to 4.
+        num_history_steps: Number of history egomotion steps. Defaults to 16.
+        num_future_steps: Number of future egomotion steps. Defaults to 64.
 
     Returns:
         A dictionary containing:
@@ -118,7 +120,9 @@ class LocalPhysicalAIAVDataset(Dataset):
         cameras: list[str] | None = None,
         t0_us: int = 0,
         dt_us: int = 50_000,
-        num_frames: int = 10,
+        num_frames: int = 4,
+        num_history_steps: int = 16,
+        num_future_steps: int = 64,
     ) -> None:
         if clip_ids is not None and split is not None:
             raise ValueError("Cannot specify both clip_ids and split. Choose one.")
@@ -128,6 +132,8 @@ class LocalPhysicalAIAVDataset(Dataset):
         self.t0_us = t0_us
         self.dt_us = dt_us
         self.num_frames = num_frames
+        self.num_history_steps = num_history_steps
+        self.num_future_steps = num_future_steps
 
         # Load metadata files
         self._load_metadata()
@@ -293,16 +299,28 @@ class LocalPhysicalAIAVDataset(Dataset):
         Returns:
             Dictionary with image frames and egomotion data.
         """
-        # Generate timestamps for this clip
-        timestamps = np.array(
+        # Generate timestamps for image frames
+        image_timestamps = np.array(
             [self.t0_us + i * self.dt_us for i in range(self.num_frames)],
+            dtype=np.int64,
+        )
+
+        # Generate timestamps for history (before t0)
+        history_timestamps = np.array(
+            [self.t0_us - (self.num_history_steps - i) * self.dt_us for i in range(self.num_history_steps)],
+            dtype=np.int64,
+        )
+
+        # Generate timestamps for future (after t0, including t0)
+        future_timestamps = np.array(
+            [self.t0_us + i * self.dt_us for i in range(self.num_future_steps)],
             dtype=np.int64,
         )
 
         # Load images from all cameras
         all_images = []
         for camera in self.cameras:
-            images = self._load_camera_data(clip_id, camera, timestamps)
+            images = self._load_camera_data(clip_id, camera, image_timestamps)
             all_images.append(images)
 
         # Stack images: (num_cameras, num_frames, H, W, C)
@@ -318,27 +336,26 @@ class LocalPhysicalAIAVDataset(Dataset):
             dtype=torch.long
         )
 
-        # Load egomotion data
-        ego_state = self._load_egomotion_data(clip_id, timestamps)
+        # Load egomotion data for history
+        ego_history_state = self._load_egomotion_data(clip_id, history_timestamps)
+        ego_history_xyz = ego_history_state.pose.translation  # Shape: (num_history_steps, 3)
+        ego_history_rot = ego_history_state.pose.rotation.as_matrix()  # Shape: (num_history_steps, 3, 3)
 
-        # Extract position (xyz) and rotation
-        ego_history_xyz = ego_state.pose.translation  # Shape: (num_frames, 3)
-        ego_rot = ego_state.pose.rotation  # scipy Rotation object
+        # Load egomotion data for future
+        ego_future_state = self._load_egomotion_data(clip_id, future_timestamps)
+        ego_future_xyz = ego_future_state.pose.translation  # Shape: (num_future_steps, 3)
+        ego_future_rot = ego_future_state.pose.rotation.as_matrix()  # Shape: (num_future_steps, 3, 3)
 
-        # Convert rotation to rotation matrix (num_frames, 3, 3)
-        ego_history_rot = ego_rot.as_matrix()  # Shape: (num_frames, 3, 3)
-
-        # For now, history and future are the same (no split)
-        # Reshape to (1, 1, num_frames, 3) for xyz
+        # Reshape to (1, 1, num_steps, 3) for xyz
         ego_history_xyz_t = torch.from_numpy(ego_history_xyz).float().unsqueeze(0).unsqueeze(0)
-        ego_future_xyz_t = ego_history_xyz_t.clone()
+        ego_future_xyz_t = torch.from_numpy(ego_future_xyz).float().unsqueeze(0).unsqueeze(0)
 
-        # Reshape to (1, 1, num_frames, 3, 3) for rotation matrices
+        # Reshape to (1, 1, num_steps, 3, 3) for rotation matrices
         ego_history_rot_t = torch.from_numpy(ego_history_rot).float().unsqueeze(0).unsqueeze(0)
-        ego_future_rot_t = ego_history_rot_t.clone()
+        ego_future_rot_t = torch.from_numpy(ego_future_rot).float().unsqueeze(0).unsqueeze(0)
 
-        # Create timestamps tensors
-        absolute_timestamps = torch.from_numpy(timestamps).float().unsqueeze(0).expand(len(self.cameras), -1)
+        # Create timestamps tensors for images
+        absolute_timestamps = torch.from_numpy(image_timestamps).float().unsqueeze(0).expand(len(self.cameras), -1)
         relative_timestamps = absolute_timestamps - self.t0_us
 
         # Get split info if available
@@ -390,7 +407,9 @@ def load_physical_aiavdataset(
     clip_id: str,
     t0_us: int = 0,
     dt_us: int = 50_000,
-    num_frames: int = 10,
+    num_frames: int = 4,
+    num_history_steps: int = 16,
+    num_future_steps: int = 64,
     cameras: list[str] | None = None,
 ) -> dict[str, Any]:
     """Load a single clip from local dataset (convenience function).
@@ -403,7 +422,9 @@ def load_physical_aiavdataset(
         clip_id: The clip ID to load.
         t0_us: Initial timestamp offset in microseconds. Defaults to 0.
         dt_us: Time step between frames in microseconds. Defaults to 50_000 (20Hz).
-        num_frames: Number of frames to load. Defaults to 10.
+        num_frames: Number of image frames to load. Defaults to 4.
+        num_history_steps: Number of history egomotion steps. Defaults to 16.
+        num_future_steps: Number of future egomotion steps. Defaults to 64.
         cameras: List of camera names to load. Defaults to ["camera_front_wide_120fov"].
 
     Returns:
@@ -427,9 +448,9 @@ def load_physical_aiavdataset(
         ...     t0_us=5_100_000
         ... )
         >>> print(data["image_frames"].shape)
-        (1, 10, 1080, 1920, 3)
+        (4, 4, 3, 1080, 1920)
         >>> print(data["ego_history_xyz"].shape)
-        (10, 3)
+        (1, 1, 16, 3)
     """
     dataset = LocalPhysicalAIAVDataset(
         dataset_root=dataset_root,
@@ -438,6 +459,8 @@ def load_physical_aiavdataset(
         t0_us=t0_us,
         dt_us=dt_us,
         num_frames=num_frames,
+        num_history_steps=num_history_steps,
+        num_future_steps=num_future_steps,
     )
     return dataset[0]
 
@@ -449,7 +472,9 @@ def get_dataloader(
     cameras: list[str] | None = None,
     t0_us: int = 0,
     dt_us: int = 50_000,
-    num_frames: int = 10,
+    num_frames: int = 4,
+    num_history_steps: int = 16,
+    num_future_steps: int = 64,
     batch_size: int = 1,
     shuffle: bool = False,
     num_workers: int = 0,
@@ -467,7 +492,9 @@ def get_dataloader(
         cameras: List of camera names to load.
         t0_us: Initial timestamp offset in microseconds.
         dt_us: Time step between frames in microseconds.
-        num_frames: Number of frames to load per sample.
+        num_frames: Number of image frames to load per sample.
+        num_history_steps: Number of history egomotion steps.
+        num_future_steps: Number of future egomotion steps.
         batch_size: Number of samples per batch.
         shuffle: Whether to shuffle the data.
         num_workers: Number of worker processes (must be 0 due to video reader limitations).
@@ -497,6 +524,8 @@ def get_dataloader(
         t0_us=t0_us,
         dt_us=dt_us,
         num_frames=num_frames,
+        num_history_steps=num_history_steps,
+        num_future_steps=num_future_steps,
     )
 
     return DataLoader(
