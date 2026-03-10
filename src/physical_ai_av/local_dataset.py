@@ -32,9 +32,9 @@ Expected directory structure:
                 egomotion.chunk_0000.zip
                 egomotion.chunk_0001.zip
                 ...
-        lidar/（optional）
+        lidar/ (optional)
             ...
-        radar/（optional）
+        radar/ (optional)
             ...
 """
 
