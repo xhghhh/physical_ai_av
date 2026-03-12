@@ -51,6 +51,7 @@ import torch
 from torch.utils.data import Dataset
 
 from physical_ai_av import egomotion, video
+from physical_ai_av.calibration import CameraIntrinsics, SensorExtrinsics, VehicleDimensions
 
 logger = logging.getLogger(__name__)
 
@@ -382,6 +383,57 @@ class LocalPhysicalAIAVDataset(Dataset):
     def get_sensor_presence(self, clip_id: str) -> pd.Series:
         """Get sensor presence information for a clip."""
         return self.sensor_presence.loc[clip_id]
+
+    def load_calibration_data(
+        self, clip_id: str
+    ) -> tuple[CameraIntrinsics, SensorExtrinsics, VehicleDimensions]:
+        """Load calibration data for a specific clip.
+
+        Calibration data is stored as direct parquet files (not zipped) per chunk.
+        Camera intrinsics and sensor extrinsics are indexed by (clip_id, sensor_name).
+        Vehicle dimensions are indexed by clip_id.
+
+        Args:
+            clip_id: The clip ID to load calibration data for.
+
+        Returns:
+            Tuple of (camera_intrinsics, sensor_extrinsics, vehicle_dimensions).
+
+        Example:
+            >>> dataset = LocalPhysicalAIAVDataset("/path/to/data", clip_ids=["clip_id"])
+            >>> camera_intrinsics, sensor_extrinsics, vehicle_dimensions = dataset.load_calibration_data("clip_id")
+        """
+        chunk_id = self.get_clip_chunk(clip_id)
+
+        # Load camera intrinsics (direct parquet file, not zipped)
+        # Filter by clip_id since intrinsics has MultiIndex (clip_id, camera_name)
+        intrinsics_path = self._get_chunk_feature_path(chunk_id, "camera_intrinsics")
+        intrinsics_df = pd.read_parquet(intrinsics_path)
+        clip_intrinsics_df = intrinsics_df.loc[clip_id]  # Get only this clip's cameras
+        camera_intrinsics = CameraIntrinsics.from_intrinsics_df(clip_intrinsics_df)
+
+        # Load sensor extrinsics (direct parquet file, not zipped)
+        # Filter by clip_id since extrinsics has MultiIndex (clip_id, sensor_name)
+        extrinsics_path = self._get_chunk_feature_path(chunk_id, "sensor_extrinsics")
+        extrinsics_df = pd.read_parquet(extrinsics_path)
+        clip_extrinsics_df = extrinsics_df.loc[clip_id]  # Get only this clip's sensors
+        sensor_extrinsics = SensorExtrinsics.from_extrinsics_df(clip_extrinsics_df)
+
+        # Load vehicle dimensions (direct parquet file, not zipped)
+        # Vehicle dimensions are indexed by clip_id, so look up the specific clip
+        dimensions_path = self._get_chunk_feature_path(chunk_id, "vehicle_dimensions")
+        dimensions_df = pd.read_parquet(dimensions_path)
+        clip_dimensions = dimensions_df.loc[clip_id]
+        vehicle_dimensions = VehicleDimensions(
+            length=clip_dimensions["length"],
+            width=clip_dimensions["width"],
+            height=clip_dimensions["height"],
+            rear_axle_to_bbox_center=clip_dimensions["rear_axle_to_bbox_center"],
+            wheelbase=clip_dimensions["wheelbase"],
+            track_width=clip_dimensions["track_width"],
+        )
+
+        return camera_intrinsics, sensor_extrinsics, vehicle_dimensions
 
 
 class _Features:
