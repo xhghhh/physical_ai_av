@@ -435,6 +435,71 @@ class LocalPhysicalAIAVDataset(Dataset):
 
         return camera_intrinsics, sensor_extrinsics, vehicle_dimensions
 
+    @staticmethod
+    def print_data_info(data: dict[str, Any]) -> None:
+        """Print information about a data sample.
+
+        Args:
+            data: Dictionary containing sample data from LocalPhysicalAIAVDataset.
+
+        Example:
+            >>> dataset = LocalPhysicalAIAVDataset("/path/to/data", clip_ids=["clip_id"])
+            >>> data = dataset[0]
+            >>> LocalPhysicalAIAVDataset.print_data_info(data)
+        """
+        print("\n" + "=" * 60)
+        print("DATA SAMPLE INFORMATION")
+        print("=" * 60)
+
+        print(f"\nClip ID: {data['clip_id']}")
+        print(f"t0_us: {data['t0_us']}")
+
+        print("\n--- Image Frames ---")
+        image_frames = data["image_frames"]
+        print(f"  Shape: {image_frames.shape}")
+        print(f"  Dtype: {image_frames.dtype}")
+        print(f"  N_cameras: {image_frames.shape[0]}")
+        print(f"  Num frames: {image_frames.shape[1]}")
+        print(f"  Image size: {image_frames.shape[3]}x{image_frames.shape[4]}")
+
+        print("\n--- Camera Indices ---")
+        camera_indices = data["camera_indices"]
+        print(f"  Shape: {camera_indices.shape}")
+        print(f"  Values: {camera_indices}")
+
+        index_to_camera = {
+            0: "camera_cross_left_120fov",
+            1: "camera_front_wide_120fov",
+            2: "camera_cross_right_120fov",
+            3: "camera_rear_left_70fov",
+            4: "camera_rear_tele_30fov",
+            5: "camera_rear_right_70fov",
+            6: "camera_front_tele_30fov",
+        }
+        camera_names = [index_to_camera.get(int(idx), f"camera_{idx}") for idx in camera_indices]
+        print(f"  Camera names: {camera_names}")
+
+        print("\n--- Ego History ---")
+        ego_history_xyz = data["ego_history_xyz"]
+        ego_history_rot = data["ego_history_rot"]
+        print(f"  ego_history_xyz shape: {ego_history_xyz.shape}")
+        print(f"  ego_history_rot shape: {ego_history_rot.shape}")
+
+        print("\n--- Ego Future ---")
+        ego_future_xyz = data["ego_future_xyz"]
+        ego_future_rot = data["ego_future_rot"]
+        print(f"  ego_future_xyz shape: {ego_future_xyz.shape}")
+        print(f"  ego_future_rot shape: {ego_future_rot.shape}")
+
+        print("\n--- Timestamps ---")
+        relative_timestamps = data["relative_timestamps"]
+        absolute_timestamps = data["absolute_timestamps"]
+        print(f"  relative_timestamps shape: {relative_timestamps.shape}")
+        print(f"  absolute_timestamps shape: {absolute_timestamps.shape}")
+        print(f"  Time range: {relative_timestamps.min():.3f} to {relative_timestamps.max():.3f} us")
+
+        print("\n" + "=" * 60)
+
 
 class _Features:
     """Helper class for representing dataset features (mirrors Features in dataset.py)."""

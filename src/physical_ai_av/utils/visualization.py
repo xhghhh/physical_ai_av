@@ -511,6 +511,7 @@ def visualize_trajectory_front_view(
     lookahead_time_s: float = 5.0,
     num_lookahead_points: int = 50,
     figsize: tuple[int, int] = (12, 8),
+    frame_time_us: int | None = None,
 ) -> tuple[plt.Figure, plt.Axes]:
     """Visualize trajectory in front view (camera perspective) with bounding boxes.
 
@@ -527,6 +528,8 @@ def visualize_trajectory_front_view(
         lookahead_time_s: Lookahead time in seconds for trajectory visualization.
         num_lookahead_points: Number of points to sample for trajectory visualization.
         figsize: Figure size for the plot.
+        frame_time_us: Optional frame timestamp in microseconds for time annotation.
+            If provided, adds time info to the title showing relative time in seconds.
 
     Returns:
         Tuple of (figure, axes) for the created plot.
@@ -679,8 +682,142 @@ def visualize_trajectory_front_view(
     sm.set_array([])
     plt.colorbar(sm, label="Lookahead Time (s)", ax=ax)
 
-    ax.set_title(f"Trajectory Front View\n{camera_name}\nClip: {clip_id}")
+    # Build title with optional time info
+    title = f"Trajectory Front View\n{camera_name}\nClip: {clip_id}"
+    if frame_time_us is not None:
+        frame_time_s = frame_time_us / 1e6
+        is_history = frame_time_us < 0
+        time_label = "HISTORY" if is_history else "FUTURE"
+        time_color = "blue" if is_history else "red"
+        title += f"\nTime: {frame_time_s:+.2f}s [{time_label}]"
+        ax.set_title(title, color=time_color, fontsize=12, fontweight="bold")
+    else:
+        ax.set_title(title)
     ax.axis("off")
     plt.tight_layout()
 
     return fig, ax
+
+
+def visualize_video_with_trajectory(
+    data: dict,
+    camera_intrinsics: CameraIntrinsics,
+    sensor_extrinsics: SensorExtrinsics,
+    vehicle_dimensions: VehicleDimensions,
+    camera_name: str = "camera_front_wide_120fov",
+    lookahead_time_s: float = 5.0,
+    num_lookahead_points: int = 50,
+    fps: int = 10,
+    figsize: tuple[int, int] = (12, 8),
+) -> list[np.ndarray]:
+    """Generate video frames with trajectory overlay and timestep annotations.
+
+    This function creates a sequence of video frames showing the front camera view
+    with projected vehicle bounding boxes and timestep annotations (history/future).
+    It uses visualize_trajectory_front_view for each frame.
+
+    Args:
+        data: Dictionary containing sample data from LocalPhysicalAIAVDataset.
+        camera_intrinsics: CameraIntrinsics object containing camera models.
+        sensor_extrinsics: SensorExtrinsics object containing sensor poses.
+        vehicle_dimensions: VehicleDimensions object containing vehicle dimensions.
+        camera_name: Name of the front camera to use for visualization.
+        lookahead_time_s: Lookahead time in seconds for trajectory visualization.
+        num_lookahead_points: Number of points to sample for trajectory visualization.
+        fps: Frames per second for the output video.
+        figsize: Figure size for each frame.
+
+    Returns:
+        List of numpy arrays representing video frames (H, W, 3) in RGB format.
+
+    Example:
+        >>> from physical_ai_av import LocalPhysicalAIAVDataset
+        >>> from physical_ai_av.utils.visualization import visualize_video_with_trajectory
+        >>> import mediapy as mp
+        >>> dataset = LocalPhysicalAIAVDataset("/path/to/data", clip_ids=["clip_id"])
+        >>> data = dataset[0]
+        >>> frames = visualize_video_with_trajectory(
+        ...     data, camera_intrinsics, sensor_extrinsics, vehicle_dimensions
+        ... )
+        >>> mp.write_video("output.mp4", frames, fps=10)
+    """
+    import io
+
+    # Extract data
+    image_frames = data["image_frames"]  # (N_cameras, num_frames, 3, H, W)
+    camera_indices = data["camera_indices"]  # (N_cameras,)
+    relative_timestamps = data["relative_timestamps"]  # (N_cameras, num_frames)
+    t0_us = data["t0_us"]
+    clip_id = data["clip_id"]
+
+    # Find the index of the specified camera
+    camera_names = []
+    index_to_camera = {
+        0: "camera_cross_left_120fov",
+        1: "camera_front_wide_120fov",
+        2: "camera_cross_right_120fov",
+        3: "camera_rear_left_70fov",
+        4: "camera_rear_tele_30fov",
+        5: "camera_rear_right_70fov",
+        6: "camera_front_tele_30fov",
+    }
+    for idx in camera_indices:
+        camera_names.append(index_to_camera.get(int(idx), f"camera_{idx}"))
+
+    if camera_name not in camera_names:
+        raise ValueError(f"Camera {camera_name} not found in data. Available: {camera_names}")
+
+    camera_idx = camera_names.index(camera_name)
+
+    # Get frames for this camera
+    camera_frames = image_frames[camera_idx]  # (num_frames, 3, H, W)
+    camera_timestamps = relative_timestamps[camera_idx]  # (num_frames,)
+
+    # Convert to numpy if needed
+    if hasattr(camera_frames, "numpy"):
+        camera_frames = camera_frames.numpy()
+    if hasattr(camera_timestamps, "numpy"):
+        camera_timestamps = camera_timestamps.numpy()
+
+    # Get number of frames
+    num_frames = camera_frames.shape[0]
+
+    # Generate output frames using visualize_trajectory_front_view for each frame
+    output_frames = []
+
+    for frame_idx in range(num_frames):
+        # Get current frame timestamp
+        frame_time_us = int(camera_timestamps[frame_idx])
+
+        # Create a modified data dict with only the current frame
+        frame_data = data.copy()
+        frame_data["image_frames"] = image_frames[:, frame_idx : frame_idx + 1, ...]  # Keep only this frame
+        frame_data["relative_timestamps"] = relative_timestamps[:, frame_idx : frame_idx + 1]
+        frame_data["absolute_timestamps"] = data["absolute_timestamps"][:, frame_idx : frame_idx + 1]
+
+        # Use visualize_trajectory_front_view with frame_time_us for time annotation
+        fig, ax = visualize_trajectory_front_view(
+            frame_data,
+            camera_intrinsics,
+            sensor_extrinsics,
+            vehicle_dimensions,
+            camera_name=camera_name,
+            lookahead_time_s=lookahead_time_s,
+            num_lookahead_points=num_lookahead_points,
+            figsize=figsize,
+            frame_time_us=frame_time_us,
+        )
+
+        # Convert figure to numpy array
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        buf.seek(0)
+        plt.close(fig)
+
+        # Read the image
+        from PIL import Image
+
+        img = Image.open(buf)
+        output_frames.append(np.array(img))
+
+    return output_frames

@@ -10,6 +10,7 @@ from src.physical_ai_av.utils.visualization import (
     visualize_egomotion_trajectory_3d,
     visualize_sample,
     visualize_trajectory_front_view,
+    visualize_video_with_trajectory,
 )
 
 DATASET_ROOT = "/home/duzl/hlc/physical_ai_av/data"
@@ -49,42 +50,7 @@ def main():
     print("Calibration data loaded.")
     print()
 
-    def print_data_info(data):
-      print("Data keys:", list(data.keys()))
-      print()
-      print(f"image_frames: {data['image_frames'].shape}")
-      print(f"  -> (N_cameras, num_frames, 3, H, W)")
-      print()
-      print(f"camera_indices: {data['camera_indices'].shape}")
-      print(f"  -> {data['camera_indices']}")
-      print()
-      print(f"ego_history_xyz: {data['ego_history_xyz'].shape}")
-      print(f"  -> (1, 1, num_history_steps, 3)")
-      print()
-      print(f"ego_history_rot: {data['ego_history_rot'].shape}")
-      print(f"  -> (1, 1, num_history_steps, 3, 3)")
-      print()
-      print(f"ego_future_xyz: {data['ego_future_xyz'].shape}")
-      print(f"  -> (1, 1, num_future_steps, 3)")
-      print()
-      print(f"ego_future_rot: {data['ego_future_rot'].shape}")
-      print(f"  -> (1, 1, num_future_steps, 3, 3)")
-      print()
-      print(f"relative_timestamps: {data['relative_timestamps'].shape}")
-      print(f"  -> (N_cameras, num_frames)")
-      print()
-      print(f"absolute_timestamps: {data['absolute_timestamps'].shape}")
-      print(f"  -> (N_cameras, num_frames)")
-      print()
-      print(f"t0_us: {data['t0_us']}")
-      print(f"clip_id: {data['clip_id']}")
-      print(f"split: {data['split']}")
-      print()
-      print("=" * 60)
-      print("Successfully loaded!")
-      print("=" * 60)
-
-    print_data_info(data)
+    LocalPhysicalAIAVDataset.print_data_info(data)
 
     # Visualize the sample
     print()
@@ -122,6 +88,32 @@ def main():
     )
     fig.savefig("visualization_front_view.png", dpi=150, bbox_inches="tight")
     print("Saved: visualization_front_view.png")
+
+    # 4. Generate video with trajectory overlay and timestep annotations
+    print("Generating video with trajectory overlay...")
+    video_frames = visualize_video_with_trajectory(
+        data,
+        camera_intrinsics=camera_intrinsics,
+        sensor_extrinsics=sensor_extrinsics,
+        vehicle_dimensions=vehicle_dimensions,
+        camera_name="camera_front_wide_120fov",
+        lookahead_time_s=5.0,
+        fps=10,
+    )
+    # Save video as MP4 using OpenCV
+    import cv2
+
+    height, width = video_frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(
+        "visualization_video_with_trajectory.mp4", fourcc, fps=10, frameSize=(width, height)
+    )
+    for frame in video_frames:
+        # Convert RGB to BGR for OpenCV
+        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        out.write(frame_bgr)
+    out.release()
+    print("Saved: visualization_video_with_trajectory.mp4")
 
     print()
     print("=" * 60)
